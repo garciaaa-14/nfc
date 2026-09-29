@@ -8,17 +8,15 @@ import android.nfc.tech.NfcA;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.util.Arrays;
 import java.util.Locale;
 
@@ -31,27 +29,27 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
     private NfcAdapter nfcAdapter;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private TextView status;
-    private TextView tagInfo;
+    private TextView summary;
     private TextView logView;
-    private EditText rawInput;
-    private Button restoreButton;
-    private Button rawButton;
-    private CheckBox uidGuard;
-    private volatile Tag lastTag;
-    private volatile Snapshot lastSnapshot;
+    private Button autoButton;
+    private Button analyseButton;
+    private volatile boolean autoArmed = false;
+    private volatile boolean analyseArmed = false;
+    private volatile boolean busy = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         nfcAdapter = NfcAdapter.getDefaultAdapter(this);
         setContentView(buildUi());
+        showRootInfo();
 
         if (nfcAdapter == null) {
             status.setText("Aquest mòbil no té NFC.");
         } else if (!nfcAdapter.isEnabled()) {
-            status.setText("Activa l'NFC del mòbil i torna a l'app.");
+            status.setText("Activa l'NFC del mòbil.");
         } else {
-            status.setText("Apropa la targeta NFC al mòbil.");
+            status.setText("Prem AUTO UNLOCK i després apropa la targeta.");
         }
     }
 
@@ -62,14 +60,14 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         root.setPadding(pad, pad, pad, pad);
 
         TextView title = new TextView(this);
-        title.setText("NFC Unlock Lab");
+        title.setText("NFC Unlock Lab v2");
         title.setTextSize(28);
         title.setGravity(Gravity.START);
-        title.setPadding(0, 0, 0, dp(8));
+        title.setPadding(0, 0, 0, dp(6));
         root.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Diagnòstic i intent controlat per la teva NTAG216 clonada. No modifica res automàticament.");
+        subtitle.setText("Auto Unlock per la teva NTAG216 clonada. Executa totes les rutes compatibles amb Android en una sola detecció.");
         subtitle.setTextSize(15);
         subtitle.setPadding(0, 0, 0, dp(14));
         root.addView(subtitle);
@@ -79,49 +77,34 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         status.setPadding(dp(12), dp(12), dp(12), dp(12));
         root.addView(status);
 
-        tagInfo = new TextView(this);
-        tagInfo.setText("Encara no s'ha llegit cap targeta.");
-        tagInfo.setTextIsSelectable(true);
-        tagInfo.setPadding(0, dp(12), 0, dp(12));
-        root.addView(tagInfo);
+        autoButton = new Button(this);
+        autoButton.setText("AUTO UNLOCK — APROPA LA TARGETA");
+        autoButton.setOnClickListener(v -> armAutoUnlock());
+        root.addView(autoButton);
 
-        uidGuard = new CheckBox(this);
-        uidGuard.setChecked(true);
-        uidGuard.setText("Només permetre escriptura al UID 04:B0:B1:BB:4A:59:80");
-        root.addView(uidGuard);
-
-        restoreButton = new Button(this);
-        restoreButton.setText("INTENTAR RESTAURAR LOCK BYTES");
-        restoreButton.setEnabled(false);
-        restoreButton.setOnClickListener(v -> confirmRestore());
-        root.addView(restoreButton);
-
-        TextView rawLabel = new TextView(this);
-        rawLabel.setText("Comanda NFC-A raw (hex):");
-        rawLabel.setPadding(0, dp(18), 0, dp(4));
-        root.addView(rawLabel);
-
-        rawInput = new EditText(this);
-        rawInput.setHint("Exemple: 60   o   30 E2");
-        rawInput.setInputType(InputType.TYPE_CLASS_TEXT);
-        rawInput.setSingleLine(true);
-        root.addView(rawInput);
-
-        rawButton = new Button(this);
-        rawButton.setText("ENVIAR COMANDA RAW");
-        rawButton.setEnabled(false);
-        rawButton.setOnClickListener(v -> sendRawFromUi());
-        root.addView(rawButton);
+        analyseButton = new Button(this);
+        analyseButton.setText("NOMÉS ANALITZAR");
+        analyseButton.setOnClickListener(v -> armAnalyse());
+        root.addView(analyseButton);
 
         Button clear = new Button(this);
         clear.setText("NETEJAR LOG");
-        clear.setOnClickListener(v -> logView.setText(""));
+        clear.setOnClickListener(v -> {
+            logView.setText("");
+            summary.setText("");
+        });
         root.addView(clear);
 
+        summary = new TextView(this);
+        summary.setTextSize(16);
+        summary.setTextIsSelectable(true);
+        summary.setPadding(0, dp(14), 0, dp(8));
+        root.addView(summary);
+
         TextView logTitle = new TextView(this);
-        logTitle.setText("Log");
+        logTitle.setText("Log tècnic");
         logTitle.setTextSize(18);
-        logTitle.setPadding(0, dp(18), 0, dp(6));
+        logTitle.setPadding(0, dp(12), 0, dp(6));
         root.addView(logTitle);
 
         logView = new TextView(this);
@@ -133,6 +116,24 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root);
         return scroll;
+    }
+
+    private void armAutoUnlock() {
+        if (busy) return;
+        autoArmed = true;
+        analyseArmed = false;
+        logView.setText("");
+        summary.setText("");
+        status.setText("AUTO UNLOCK armat. Apropa la targeta i no la moguis.");
+    }
+
+    private void armAnalyse() {
+        if (busy) return;
+        autoArmed = false;
+        analyseArmed = true;
+        logView.setText("");
+        summary.setText("");
+        status.setText("Anàlisi armada. Apropa la targeta i no la moguis.");
     }
 
     @Override
@@ -154,183 +155,304 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
 
     @Override
     public void onTagDiscovered(Tag tag) {
-        lastTag = tag;
-        new Thread(() -> inspectTag(tag)).start();
-    }
-
-    private void inspectTag(Tag tag) {
-        String uid = toHexColon(tag.getId());
-        appendLog("\n=== TAG DETECTADA ===");
-        appendLog("UID: " + uid);
-
-        NfcA nfca = NfcA.get(tag);
-        if (nfca == null) {
-            setStatus("La targeta no exposa NfcA.");
+        if (busy) return;
+        if (!autoArmed && !analyseArmed) {
+            setStatus("Targeta detectada. Prem AUTO UNLOCK per començar.");
             return;
         }
 
-        try {
-            nfca.connect();
-            nfca.setTimeout(1000);
+        boolean doUnlock = autoArmed;
+        autoArmed = false;
+        analyseArmed = false;
+        busy = true;
+        setButtons(false);
 
-            byte[] version = tx(nfca, new byte[]{0x60}, "GET_VERSION (60)");
-            byte[] p2Read = tx(nfca, new byte[]{0x30, 0x02}, "READ page 02 (30 02)");
-            byte[] pE2Read = tx(nfca, new byte[]{0x30, (byte) 0xE2}, "READ page E2 (30 E2)");
-
-            byte[] p2 = first4(p2Read);
-            byte[] pE2 = first4(pE2Read);
-            Snapshot snap = new Snapshot(tag.getId(), version, p2, pE2);
-            lastSnapshot = snap;
-
-            boolean correctUid = Arrays.equals(tag.getId(), EXPECTED_UID);
-            boolean staticLocked = p2 != null && (p2[2] != 0 || p2[3] != 0);
-            boolean dynamicLocked = pE2 != null && (pE2[0] != 0 || pE2[1] != 0 || pE2[2] != 0);
-
-            String info = "UID: " + uid +
-                    "\nUID esperat: " + (correctUid ? "SÍ" : "NO") +
-                    "\nGET_VERSION: " + hex(version) +
-                    "\nPàgina 02: " + hex(p2) +
-                    "\nPàgina E2: " + hex(pE2) +
-                    "\nStatic locks actius: " + (staticLocked ? "SÍ" : "NO") +
-                    "\nDynamic locks actius: " + (dynamicLocked ? "SÍ" : "NO");
-
-            ui.post(() -> {
-                tagInfo.setText(info);
-                boolean canEnable = p2 != null && pE2 != null && (!uidGuard.isChecked() || correctUid);
-                restoreButton.setEnabled(canEnable);
-                rawButton.setEnabled(true);
-                status.setText("Lectura completada. Mantén la targeta a prop per fer més proves.");
-            });
-
-        } catch (Exception e) {
-            appendLog("ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-            setStatus("No s'ha pogut completar la lectura. Torna a apropar la targeta.");
-        } finally {
-            try { nfca.close(); } catch (Exception ignored) {}
-        }
+        new Thread(() -> {
+            try {
+                runFullFlow(tag, doUnlock);
+            } finally {
+                busy = false;
+                setButtons(true);
+            }
+        }).start();
     }
 
-    private void confirmRestore() {
-        Snapshot snap = lastSnapshot;
-        if (snap == null) return;
+    private void runFullFlow(Tag tag, boolean doUnlock) {
+        appendLog("=== TARGETA DETECTADA ===");
+        appendLog("UID: " + toHexColon(tag.getId()));
 
-        if (uidGuard.isChecked() && !Arrays.equals(snap.uid, EXPECTED_UID)) {
-            new AlertDialog.Builder(this)
-                    .setTitle("UID diferent")
-                    .setMessage("Per seguretat, aquesta app només escriu a la targeta concreta que m'has passat.")
-                    .setPositiveButton("OK", null)
-                    .show();
+        if (!Arrays.equals(tag.getId(), EXPECTED_UID)) {
+            appendLog("ATURAT: UID diferent de la targeta autoritzada.");
+            setStatus("UID diferent. No s'ha escrit res.");
             return;
         }
 
-        if (snap.page2 == null || snap.pageE2 == null) return;
+        setStatus(doUnlock ? "AUTO UNLOCK en curs. No moguis la targeta." : "Analitzant. No moguis la targeta.");
 
-        String msg = "L'app intentarà escriure només els bytes de lock, mantenint la resta de bytes tal com s'han llegit.\n\n" +
-                "02 actual: " + hex(snap.page2) + "\n" +
-                "02 intent: " + hex(new byte[]{snap.page2[0], snap.page2[1], 0x00, 0x00}) + "\n\n" +
-                "E2 actual: " + hex(snap.pageE2) + "\n" +
-                "E2 intent: " + hex(new byte[]{0x00, 0x00, 0x00, snap.pageE2[3]}) + "\n\n" +
-                "En una NTAG original això serà rebutjat. En un clon pot funcionar o no.";
+        byte[] version = freshTx(tag, new byte[]{0x60}, "GET_VERSION");
+        byte[] p2 = first4(freshTx(tag, new byte[]{0x30, 0x02}, "READ 02"));
+        byte[] pE2 = first4(freshTx(tag, new byte[]{0x30, (byte)0xE2}, "READ E2"));
 
-        new AlertDialog.Builder(this)
-                .setTitle("Intentar restaurar locks?")
-                .setMessage(msg)
-                .setNegativeButton("Cancel·lar", null)
-                .setPositiveButton("Intentar", (d, w) -> {
-                    Tag t = lastTag;
-                    boolean enforceUid = uidGuard.isChecked();
-                    if (t != null) new Thread(() -> attemptRestore(t, enforceUid)).start();
-                })
-                .show();
-    }
+        appendLog("GET_VERSION: " + hex(version));
+        appendLog("PAGE 02: " + hex(p2));
+        appendLog("PAGE E2: " + hex(pE2));
 
-    private void attemptRestore(Tag tag, boolean enforceUid) {
-        Snapshot snap = lastSnapshot;
-        if (snap == null) return;
-        if (enforceUid && !Arrays.equals(tag.getId(), EXPECTED_UID)) {
-            appendLog("Escriptura cancel·lada: UID no coincideix.");
+        if (locksClear(p2, pE2)) {
+            finishSuccess("La targeta ja està desbloquejada.", p2, pE2);
             return;
         }
 
+        byte[] f0 = freshTx(tag, new byte[]{0x30, (byte)0xF0}, "MAGIC PROBE 30 F0");
+        byte[] fa = freshTx(tag, new byte[]{0x30, (byte)0xFA}, "MAGIC PROBE 30 FA");
+        byte[] fc = freshTx(tag, new byte[]{0x30, (byte)0xFC}, "MAGIC PROBE 30 FC");
+        byte[] e050 = freshTx(tag, new byte[]{(byte)0xE0, 0x50}, "USCUID PROBE E0 50");
+        byte[] e080 = freshTx(tag, new byte[]{(byte)0xE0, (byte)0x80}, "RATS PROBE E0 80");
+
+        boolean magicNtag = f0 != null || fa != null || fc != null;
+        boolean uscuid = looksLikeUscuid(e050) || looksLikeUscuid(e080);
+
+        appendLog("Magic NTAG pages: " + (magicNtag ? "DETECTADES" : "no detectades"));
+        appendLog("USCUID config: " + (uscuid ? "DETECTADA" : "no detectada"));
+        if (e050 != null) appendLog("E0 50 RX: " + hex(e050));
+        if (e080 != null) appendLog("E0 80 RX: " + hex(e080));
+
+        if (!doUnlock) {
+            showAnalysis(version, p2, pE2, magicNtag, uscuid, e050, e080);
+            setStatus("Anàlisi completada.");
+            return;
+        }
+
+        appendLog("\n=== RUTA 1: ESCRIPTURA NTAG ESTÀNDARD ===");
+        attemptStandard(tag, false);
+        p2 = readPage(tag, PAGE_STATIC_LOCK, "VERIFY RUTA 1 / 02");
+        pE2 = readPage(tag, PAGE_DYNAMIC_LOCK, "VERIFY RUTA 1 / E2");
+        if (locksClear(p2, pE2)) {
+            finishSuccess("ÈXIT amb escriptura NTAG estàndard.", p2, pE2);
+            return;
+        }
+
+        appendLog("\n=== RUTA 2: PWD_AUTH FFFFFFFF + ESCRIPTURA ===");
+        byte[] auth = freshTx(tag,
+                new byte[]{0x1B, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF},
+                "PWD_AUTH FF FF FF FF");
+        appendLog("PWD_AUTH resposta: " + hex(auth));
+        attemptStandard(tag, true);
+        p2 = readPage(tag, PAGE_STATIC_LOCK, "VERIFY RUTA 2 / 02");
+        pE2 = readPage(tag, PAGE_DYNAMIC_LOCK, "VERIFY RUTA 2 / E2");
+        if (locksClear(p2, pE2)) {
+            finishSuccess("ÈXIT després de PWD_AUTH.", p2, pE2);
+            return;
+        }
+
+        appendLog("\n=== RUTA 3: MAGIC WAKEUP EN BYTE COMPLET ===");
+        boolean wakeA = tryByteMagicSequence(tag, (byte)0x40, (byte)0x43, "40/43");
+        if (wakeA) {
+            p2 = readPage(tag, PAGE_STATIC_LOCK, "VERIFY MAGIC A / 02");
+            pE2 = readPage(tag, PAGE_DYNAMIC_LOCK, "VERIFY MAGIC A / E2");
+            if (locksClear(p2, pE2)) {
+                finishSuccess("ÈXIT amb Magic 40/43.", p2, pE2);
+                return;
+            }
+        }
+
+        boolean wakeB = tryByteMagicSequence(tag, (byte)0x20, (byte)0x23, "20/23");
+        if (wakeB) {
+            p2 = readPage(tag, PAGE_STATIC_LOCK, "VERIFY MAGIC B / 02");
+            pE2 = readPage(tag, PAGE_DYNAMIC_LOCK, "VERIFY MAGIC B / E2");
+            if (locksClear(p2, pE2)) {
+                finishSuccess("ÈXIT amb Magic 20/23.", p2, pE2);
+                return;
+            }
+        }
+
+        appendLog("\n=== RESULTAT FINAL ===");
+        p2 = readPage(tag, PAGE_STATIC_LOCK, "FINAL 02");
+        pE2 = readPage(tag, PAGE_DYNAMIC_LOCK, "FINAL E2");
+
+        String root = rootProbe();
+        appendLog(root);
+
+        String reason;
+        if (uscuid) {
+            reason = "S'ha detectat una variant USCUID/Magic, però la backdoor restant necessita un wakeup de 7 bits. L'API NFC estàndard d'Android només envia bytes complets.";
+        } else if (magicNtag) {
+            reason = "S'han detectat pàgines Magic, però cap ruta compatible amb l'API Android ha pogut baixar els lock bits.";
+        } else {
+            reason = "No s'ha detectat una backdoor Magic accessible amb les comandes que el mòbil pot enviar des de NfcA.";
+        }
+
+        String rootExtra = root.contains("ROOT=YES") && root.contains("PN553=YES")
+                ? "\n\nEl mòbil té root i /dev/pn553; això obre una possible ruta de controlador NXP de baix nivell, però no s'ha executat cap comanda directa al controlador perquè és específica del firmware i una trama errònia pot deixar l'NFC inestable."
+                : "";
+
+        String finalReason = reason + rootExtra +
+                "\n\nLocks finals:\n02 = " + hex(p2) + "\nE2 = " + hex(pE2);
+        setSummary(finalReason);
+        setStatus("Auto Unlock completat: els locks continuen actius.");
+    }
+
+    private void attemptStandard(Tag tag, boolean afterAuth) {
         NfcA nfca = NfcA.get(tag);
         if (nfca == null) return;
         try {
             nfca.connect();
             nfca.setTimeout(1200);
-            setStatus("Intentant restaurar els lock bytes...");
 
-            byte[] p2Now = first4(tx(nfca, new byte[]{0x30, 0x02}, "Pre-read 02"));
-            byte[] pE2Now = first4(tx(nfca, new byte[]{0x30, (byte)0xE2}, "Pre-read E2"));
-            if (p2Now == null || pE2Now == null) throw new IOException("No es poden llegir les pàgines abans d'escriure.");
-
-            // Conservative guard: preserve non-lock bytes exactly as currently read.
-            byte[] write02 = new byte[]{(byte)0xA2, 0x02, p2Now[0], p2Now[1], 0x00, 0x00};
-            byte[] writeE2 = new byte[]{(byte)0xA2, (byte)0xE2, 0x00, 0x00, 0x00, pE2Now[3]};
-
-            byte[] r02 = tx(nfca, write02, "WRITE 02 -> locks 00 00");
-            appendLog("WRITE 02 ACK/NAK: " + hex(r02));
-
-            byte[] rE2 = tx(nfca, writeE2, "WRITE E2 -> locks 00 00 00");
-            appendLog("WRITE E2 ACK/NAK: " + hex(rE2));
-
-            byte[] after02 = first4(tx(nfca, new byte[]{0x30, 0x02}, "Verify 02"));
-            byte[] afterE2 = first4(tx(nfca, new byte[]{0x30, (byte)0xE2}, "Verify E2"));
-
-            boolean staticCleared = after02 != null && after02[2] == 0 && after02[3] == 0;
-            boolean dynamicCleared = afterE2 != null && afterE2[0] == 0 && afterE2[1] == 0 && afterE2[2] == 0;
-
-            appendLog("RESULTAT 02: " + hex(after02));
-            appendLog("RESULTAT E2: " + hex(afterE2));
-
-            if (staticCleared && dynamicCleared) {
-                setStatus("ÈXIT: els lock bytes han quedat a zero. Torna a llegir-la amb NFC Tools.");
-            } else {
-                setStatus("El xip ha mantingut algun lock. Aquest clon no accepta l'escriptura estàndard; mira el log.");
+            if (afterAuth) {
+                try {
+                    byte[] a = nfca.transceive(new byte[]{0x1B, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF});
+                    appendLog("AUTH(session) RX: " + hex(a));
+                } catch (Exception e) {
+                    appendLog("AUTH(session) error: " + e.getMessage());
+                }
             }
+
+            byte[] r2 = nfca.transceive(new byte[]{0x30, 0x02});
+            byte[] rE2 = nfca.transceive(new byte[]{0x30, (byte)0xE2});
+            byte[] p2 = first4(r2);
+            byte[] pE2 = first4(rE2);
+            if (p2 == null || pE2 == null) return;
+
+            byte[] w02 = new byte[]{(byte)0xA2, 0x02, p2[0], p2[1], 0x00, 0x00};
+            byte[] wE2 = new byte[]{(byte)0xA2, (byte)0xE2, 0x00, 0x00, 0x00, pE2[3]};
+
+            appendLog("WRITE 02 TX: " + hex(w02));
+            appendLog("WRITE 02 RX: " + hex(nfca.transceive(w02)));
+            appendLog("WRITE E2 TX: " + hex(wE2));
+            appendLog("WRITE E2 RX: " + hex(nfca.transceive(wE2)));
         } catch (Exception e) {
-            appendLog("ERROR RESTORE: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-            setStatus("Intent fallit. El xip probablement rebutja l'escriptura estàndard dels locks.");
+            appendLog("Standard write error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         } finally {
             try { nfca.close(); } catch (Exception ignored) {}
         }
     }
 
-    private void sendRawFromUi() {
-        Tag tag = lastTag;
-        if (tag == null) return;
-        String input = rawInput.getText().toString();
-        byte[] cmd;
+    private boolean tryByteMagicSequence(Tag tag, byte first, byte second, String name) {
+        NfcA nfca = NfcA.get(tag);
+        if (nfca == null) return false;
+        boolean any = false;
         try {
-            cmd = hexToBytes(input);
-            if (cmd.length == 0) throw new IllegalArgumentException("comanda buida");
-        } catch (Exception e) {
-            new AlertDialog.Builder(this).setTitle("Hex incorrecte")
-                    .setMessage("Escriu bytes hex, per exemple: 60 o 30 E2")
-                    .setPositiveButton("OK", null).show();
-            return;
-        }
-        new Thread(() -> {
-            NfcA nfca = NfcA.get(tag);
-            if (nfca == null) return;
+            nfca.connect();
+            nfca.setTimeout(700);
+
             try {
-                nfca.connect();
-                nfca.setTimeout(1200);
-                byte[] resp = tx(nfca, cmd, "RAW " + hex(cmd));
-                setStatus("Resposta raw: " + hex(resp));
+                appendLog("MAGIC " + name + " step1 TX: " + hex(new byte[]{first}));
+                byte[] r = nfca.transceive(new byte[]{first});
+                appendLog("MAGIC " + name + " step1 RX: " + hex(r));
+                any = true;
             } catch (Exception e) {
-                appendLog("RAW ERROR: " + e.getMessage());
-                setStatus("La comanda raw ha fallat.");
-            } finally {
-                try { nfca.close(); } catch (Exception ignored) {}
+                appendLog("MAGIC " + name + " step1: " + e.getMessage());
             }
-        }).start();
+
+            try {
+                appendLog("MAGIC " + name + " step2 TX: " + hex(new byte[]{second}));
+                byte[] r = nfca.transceive(new byte[]{second});
+                appendLog("MAGIC " + name + " step2 RX: " + hex(r));
+                any = true;
+            } catch (Exception e) {
+                appendLog("MAGIC " + name + " step2: " + e.getMessage());
+            }
+
+            if (any) {
+                try {
+                    byte[] r2 = nfca.transceive(new byte[]{0x30, 0x02});
+                    byte[] rE2 = nfca.transceive(new byte[]{0x30, (byte)0xE2});
+                    byte[] p2 = first4(r2);
+                    byte[] pE2 = first4(rE2);
+                    if (p2 != null && pE2 != null) {
+                        byte[] w02 = new byte[]{(byte)0xA2, 0x02, p2[0], p2[1], 0x00, 0x00};
+                        byte[] wE2 = new byte[]{(byte)0xA2, (byte)0xE2, 0x00, 0x00, 0x00, pE2[3]};
+                        appendLog("MAGIC " + name + " WRITE02 RX: " + hex(nfca.transceive(w02)));
+                        appendLog("MAGIC " + name + " WRITEE2 RX: " + hex(nfca.transceive(wE2)));
+                    }
+                } catch (Exception e) {
+                    appendLog("MAGIC " + name + " write: " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            appendLog("MAGIC " + name + " session: " + e.getMessage());
+        } finally {
+            try { nfca.close(); } catch (Exception ignored) {}
+        }
+        return any;
     }
 
-    private byte[] tx(NfcA nfca, byte[] command, String label) throws IOException {
-        appendLog(label + "  TX: " + hex(command));
-        byte[] response = nfca.transceive(command);
-        appendLog(label + "  RX: " + hex(response));
-        return response;
+    private byte[] freshTx(Tag tag, byte[] command, String label) {
+        NfcA nfca = NfcA.get(tag);
+        if (nfca == null) return null;
+        try {
+            nfca.connect();
+            nfca.setTimeout(1000);
+            appendLog(label + " TX: " + hex(command));
+            byte[] r = nfca.transceive(command);
+            appendLog(label + " RX: " + hex(r));
+            return r;
+        } catch (Exception e) {
+            appendLog(label + " ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        } finally {
+            try { nfca.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private byte[] readPage(Tag tag, int page, String label) {
+        return first4(freshTx(tag, new byte[]{0x30, (byte)page}, label));
+    }
+
+    private boolean locksClear(byte[] p2, byte[] pE2) {
+        return p2 != null && pE2 != null &&
+                p2[2] == 0 && p2[3] == 0 &&
+                pE2[0] == 0 && pE2[1] == 0 && pE2[2] == 0;
+    }
+
+    private boolean looksLikeUscuid(byte[] r) {
+        if (r == null || r.length < 16) return false;
+        return (r[0] == (byte)0x85) || (r[0] == 0x7A && r[1] == (byte)0xFF);
+    }
+
+    private void showAnalysis(byte[] version, byte[] p2, byte[] pE2,
+                              boolean magicNtag, boolean uscuid,
+                              byte[] e050, byte[] e080) {
+        String s = "UID correcte\n" +
+                "GET_VERSION: " + hex(version) + "\n" +
+                "02: " + hex(p2) + "\n" +
+                "E2: " + hex(pE2) + "\n" +
+                "Magic NTAG pages: " + (magicNtag ? "sí" : "no") + "\n" +
+                "USCUID: " + (uscuid ? "sí" : "no") + "\n" +
+                "E0 50: " + hex(e050) + "\n" +
+                "E0 80: " + hex(e080) + "\n" +
+                rootProbe();
+        setSummary(s);
+    }
+
+    private void finishSuccess(String message, byte[] p2, byte[] pE2) {
+        String s = message + "\n\n02 = " + hex(p2) + "\nE2 = " + hex(pE2) +
+                "\n\nTorna a obrir NFC Tools i comprova que ara aparegui Writable: Yes.";
+        appendLog("SUCCESS: " + message);
+        setSummary(s);
+        setStatus("ÈXIT: lock bytes a zero.");
+    }
+
+    private void showRootInfo() {
+        new Thread(() -> appendLog(rootProbe())).start();
+    }
+
+    private String rootProbe() {
+        String root = "NO";
+        String pn = "NO";
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                    "id -u; if [ -e /dev/pn553 ]; then echo PN553_YES; else echo PN553_NO; fi"});
+            BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+            String line;
+            StringBuilder out = new StringBuilder();
+            while ((line = br.readLine()) != null) out.append(line).append('\n');
+            p.waitFor();
+            String txt = out.toString();
+            if (txt.contains("0")) root = "YES";
+            if (txt.contains("PN553_YES")) pn = "YES";
+        } catch (Exception ignored) {}
+        return "ROOT=" + root + "  PN553=" + pn;
     }
 
     private void appendLog(String s) {
@@ -341,13 +463,24 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         ui.post(() -> status.setText(s));
     }
 
+    private void setSummary(String s) {
+        ui.post(() -> summary.setText(s));
+    }
+
+    private void setButtons(boolean enabled) {
+        ui.post(() -> {
+            autoButton.setEnabled(enabled);
+            analyseButton.setEnabled(enabled);
+        });
+    }
+
     private static byte[] first4(byte[] in) {
         if (in == null || in.length < 4) return null;
         return Arrays.copyOfRange(in, 0, 4);
     }
 
     private static String hex(byte[] data) {
-        if (data == null) return "<null>";
+        if (data == null) return "<no response>";
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < data.length; i++) {
             if (i > 0) sb.append(' ');
@@ -377,19 +510,5 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
 
     private int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private static class Snapshot {
-        final byte[] uid;
-        final byte[] version;
-        final byte[] page2;
-        final byte[] pageE2;
-
-        Snapshot(byte[] uid, byte[] version, byte[] page2, byte[] pageE2) {
-            this.uid = uid == null ? null : uid.clone();
-            this.version = version == null ? null : version.clone();
-            this.page2 = page2 == null ? null : page2.clone();
-            this.pageE2 = pageE2 == null ? null : pageE2.clone();
-        }
     }
 }
